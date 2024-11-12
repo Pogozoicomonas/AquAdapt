@@ -1,0 +1,86 @@
+ASV inference from raw, demultiplexed 16S rRNA gene sequences
+
+#load packages
+library(dada2)
+library(ShortRead)
+library(Biostrings)
+
+#set directory
+path <- "~/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone"
+
+#read in names of .fastq files
+fnFs <- sort(list.files("~/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone", pattern = "_1.fastq", full.names = TRUE))
+fnRs <- sort(list.files("~/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone", pattern = "_2.fastq", full.names = TRUE)) 
+
+list.files(path)
+
+#extract sample names
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(fnFs, get.sample.name))
+head(sample.names)
+
+#inspect read quality profiles
+plotQualityProfile(fnFs[1:2])
+plotQualityProfile(fnRs[1:2])
+
+#filter and trim your sequences
+filtFs <- file.path(path, "filtered", basename(fnFs))
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, maxN = 0, maxEE = c(2, 5), 
+                     truncQ = 2, minLen = 50, rm.phix = TRUE, compress = TRUE, multithread = TRUE)
+head(out)
+
+#learn the error rates
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+plotErrors(errF, nominalQ=TRUE)
+
+#sample inference
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE, pool=T)
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE, pool=T)
+
+dadaFs[[1]]
+
+#merge paired reads
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+
+head(mergers[[1]])
+
+#construct sequence table
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+table(nchar(getSequences(seqtab)))
+
+#remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+
+#track sequences through pipeline
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+track
+
+#taxonomy assignment
+#tax assignment using .gz files from here: https://zenodo.org/records/4587955#.YfPkvuormUn
+taxa <- assignTaxonomy(seqtab.nochim, "/Users/claudiapogoreutz/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone/tax/silva_nr99_v138.1_train_set.fa.gz", multithread=TRUE)
+ 
+taxa <- addSpecies(taxa, "/Users/claudiapogoreutz/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone/tax/silva_species_assignment_v138.1.fa.gz")
+
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+
+#save tables locally
+write.csv(taxa, "/Users/claudiapogoreutz/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone/Tulip_anemone_ASVs_taxa.csv")
+write.csv(seqtab.nochim, "/Users/claudiapogoreutz/Documents/Claudia.work/UPVD_TT/UPVD_TULIP/TULIP.Junior Lab.2023.2024/Tulip.2024.data/Tulip.2024.data.16S/Novogene.botched/result.X204SC24042229-Z01-F002/RawData/anemone_full/anemone/Tulip_anemone_ASVs_table.csv")
